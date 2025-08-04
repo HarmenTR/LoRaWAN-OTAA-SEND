@@ -5,7 +5,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <Adafruit_SHT31.h>  // SHT31 sıcaklık-nem sensörü
+#include <Adafruit_SHT31.h>  // SHT31 temperature-humidity sensor
 
 Adafruit_SHT31 sht31 = Adafruit_SHT31();
 
@@ -14,7 +14,7 @@ Adafruit_SHT31 sht31 = Adafruit_SHT31();
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// LMIC Pinleri (TTGO LoRa32 V1.3.1 için)
+// LMIC Pins (for TTGO LoRa32 V1.3.1)
 const lmic_pinmap lmic_pins = {
     .nss = 18,
     .rxtx = LMIC_UNUSED_PIN,
@@ -22,7 +22,7 @@ const lmic_pinmap lmic_pins = {
     .dio = {26, 33, 32}
 };
 
-// Cihaz bilgileri (LSB sıralı)
+// Device information (LSB ordered)
 static const u1_t DEVEUI[8] = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
@@ -40,71 +40,62 @@ void os_getArtEui(u1_t* buf) { memcpy(buf, APPEUI, 8); }
 void os_getDevKey(u1_t* buf) { memcpy(buf, APPKEY, 16); }
 
 static osjob_t sendjob;
-uint16_t measureCount = 0;  // Sayaç
+uint16_t measureCount = 0;  // Counter
 
-// Ortalama hesaplamak için değişkenler
+// Variables for calculating average
 float tempSum = 0.0;
 float humiSum = 0.0;
 uint16_t sampleCount = 0;
 
-// Son ölçülen ortalama
+// Last measured average
 float lastAvgTemp = 0.0;
 float lastAvgHumi = 0.0;
 
-// Sürekli OLED güncellemesi için zaman takibi
+// Time tracking for continuous OLED update
 unsigned long lastSampleTime = 0;
 unsigned long lastOLEDUpdate = 0;
 
-// Gönderim durumunu takip etmek için flag
+// Flag to track sending status
 static bool sending = false;
 
 void saveSession() {
-  Serial.println("Session kaydedildi (örnek fonksiyon)");
+  Serial.println("Session saved (example function)");
 }
 
-// Gönderim fonksiyonu
+// Sending function
 void do_send(osjob_t* j) {
-  // LMIC modülünün önceki bir gönderimle meşgul olup olmadığını kontrol et
+  // Check if LMIC is busy with a previous transmission
   if (LMIC.opmode & OP_TXRXPEND) {
-    Serial.println(F("LMIC meşgul, gönderim bekleniyor, atlandi."));
-    // LMIC meşgulken yeni bir gönderim planlamayız, mevcut işlemi bitirmesini bekleriz.
-    // İşlem bittiğinde (EV_TXCOMPLETE) yeni gönderim zaten zamanlanacaktır.
+    Serial.println(F("LMIC busy, waiting for previous send, skipped."));
     return;
   }
 
-  // Yeterli örnek toplanıp toplanmadığını kontrol et
-  // Eğer hiç örnek yoksa, payload oluşturmaya veya göndermeye çalışma.
+  // Check if enough samples have been collected
   if (sampleCount == 0) {
-    Serial.println("Veri yok, gönderim atlandi.");
-    // Veri toplanana kadar boş paket göndermeyi denememek için
-    // bir sonraki gönderimi daha kısa bir süre sonra tekrar dene.
-    // Örneğin, 60 saniye sonra tekrar kontrol edebilirsin.
+    Serial.println("No data, send skipped.");
+    // Try again after 60 seconds
     os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(60), do_send);
     return;
   }
 
-  // 'sending' bayrağı, birden fazla do_send çağrısının üst üste gelmesini engeller.
-  // Normalde LMIC.opmode kontrolü bunu yapar, ama ek güvenlik sağlar.
+  // Prevent multiple consecutive do_send calls
   if (sending) {
-    Serial.println(F("Önceki gönderim zaten devam ediyor, atlandi."));
+    Serial.println(F("Previous send already in progress, skipped."));
     return;
   }
 
-  // Tüm kontrollerden geçtiysek, gönderim işlemine başla ve 'sending' bayrağını ayarla.
+  // Start sending
   sending = true;
 
-  // Sıcaklık ve nem ortalamalarını hesapla
-  // Bu kısma dokunmuyorum, mevcut mantığınızı koruyorum.
-  float avgTemp100 = tempSum / sampleCount; // (t + 60) * 100 olarak toplandığı varsayılıyor
+  // Calculate averages
+  float avgTemp100 = tempSum / sampleCount; // Assuming (t + 60) * 100 accumulated
   float avgHumi = humiSum / sampleCount;
 
-  // Payload'ı hazırla
-  // Bu kısma da dokunmuyorum, mevcut mantığınızı koruyorum.
-  int16_t t = (int16_t)(avgTemp100 / 10.0); // Önceki kodunuzdaki dönüşüme göre
-  int16_t h = (int16_t)(avgHumi * 10);     // Önceki kodunuzdaki dönüşüme göre
+  // Prepare payload
+  int16_t t = (int16_t)(avgTemp100 / 10.0);
+  int16_t h = (int16_t)(avgHumi * 10);
 
-  // Ekranda gösterilecek ortalamaları güncelle (payload gönderiminden sonra)
-  // Bu kısım payload ile ilgili değil ama yine de güncelleniyor.
+  // Update averages shown on screen (after payload sent)
   lastAvgTemp = ((avgTemp100 / 100.0));
   lastAvgHumi = avgHumi;
 
@@ -114,15 +105,14 @@ void do_send(osjob_t* j) {
   payload[2] = (h >> 8) & 0xFF;
   payload[3] = h & 0xFF;
 
-  // Veri gönderme komutunu tetikle
   LMIC_setTxData2(1, payload, sizeof(payload), 1);
-  Serial.print("Gönderilen değer: T=");
-  Serial.print(t); // Payload olarak gönderilen ham değeri basıyoruz
+  Serial.print("Sent values: T=");
+  Serial.print(t);
   Serial.print(" H=");
-  Serial.println(h); // Payload olarak gönderilen ham değeri basıyoruz
+  Serial.println(h);
 
-  // Gönderim için kullanılan sayaçları sıfırla
-  measureCount++; // Bu genel bir sayaç, ihtiyacınıza göre kalsın.
+  // Reset counters used for sending
+  measureCount++;
   tempSum = 0;
   humiSum = 0;
   sampleCount = 0;
@@ -133,10 +123,10 @@ void onEvent(ev_t ev) {
   Serial.print(": ");
   switch (ev) {
     case EV_JOINING:
-      Serial.println(F("Ağa katiliyor..."));
+      Serial.println(F("Joining network..."));
       display.clearDisplay();
       display.setCursor(0, 0);
-      display.println("Aga katiliyor...");
+      display.println("Joining...");
       display.display();
       break;
 
@@ -146,54 +136,53 @@ void onEvent(ev_t ev) {
       display.setCursor(0, 0);
       display.println("JOINED");
       display.setCursor(0, 10);
-      display.println("15dk sonra gonder");
+      display.println("Sending in 15 min");
       display.display();
       LMIC_setLinkCheckMode(0);
       saveSession();
 
-      // 15 dakika sonra gönderim işini başlat
+      // Start first send after 15 minutes
       os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(900), do_send);
       break;
 
-case EV_TXCOMPLETE:
-  Serial.println(F("Gönderim tamamlandi."));
-  if (LMIC.txrxFlags & TXRX_ACK) {
-    Serial.println(F("ACK alindi."));
-    Serial.print("LMIC.seqnoUp = ");
-    Serial.println(LMIC.seqnoUp);
-  } else {
-    Serial.println(F("ACK alinmadi!"));
-  }
+    case EV_TXCOMPLETE:
+      Serial.println(F("Transmission complete."));
+      if (LMIC.txrxFlags & TXRX_ACK) {
+        Serial.println(F("ACK received."));
+        Serial.print("LMIC.seqnoUp = ");
+        Serial.println(LMIC.seqnoUp);
+      } else {
+        Serial.println(F("ACK not received!"));
+      }
 
-  sending = false;  // Gönderim bitti, flag'i sıfırla
+      sending = false;  // Clear sending flag
 
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("Ortalama gonderildi");
-  display.setCursor(0, 10);
-  display.println("Yeni tur 15dk");
-  display.display();
-
-  // Eğer bu ilk veri gönderimiyse (seqnoUp == 1), 10 saniye sonra tekrar gönderimi başlat
-  if (LMIC.seqnoUp == 1) {
-    Serial.println("İlk gönderimden sonra 10 saniyelik bekleme uygulanıyor...");
-    os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(10), do_send);
-  } else {
-    // Diğer durumlarda 15 dakika sonra veri gönder
-    os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(900), do_send);
-  }
-  break;
-
-    case EV_JOIN_FAILED:
-      Serial.println(F("Katilim basarisiz!"));
       display.clearDisplay();
       display.setCursor(0, 0);
-      display.println("Katilim Hatasi");
+      display.println("Avg sent");
+      display.setCursor(0, 10);
+      display.println("Next in 15 min");
+      display.display();
+
+      // If this was the first transmission
+      if (LMIC.seqnoUp == 1) {
+        Serial.println("Waiting 10 s after first send...");
+        os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(10), do_send);
+      } else {
+        os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(900), do_send);
+      }
+      break;
+
+    case EV_JOIN_FAILED:
+      Serial.println(F("Join failed!"));
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Join Error");
       display.display();
       break;
 
     default:
-      Serial.print(F("Olay: "));
+      Serial.print(F("Event: "));
       Serial.println(ev);
       break;
   }
@@ -204,21 +193,21 @@ void setup() {
   delay(100);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("OLED bulunamadi"));
+    Serial.println(F("OLED not found"));
     while (true);
   }
 
   if (!sht31.begin(0x44)) {
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println("SHT31 bulunamadi!");
+    display.println("SHT31 not found!");
     display.display();
     while (true);
   }
 
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println("LoRa Baslatiliyor");
+  display.println("Starting LoRa");
   display.display();
 
   os_init();
@@ -229,7 +218,7 @@ void setup() {
 void loop() {
   os_runloop_once();
 
-  // Her 5 saniyede bir ölçüm al (örnekleme hızı)
+  // Take a measurement every 5 seconds (sampling rate)
   if (millis() - lastSampleTime >= 5000) {
     lastSampleTime = millis();
 
@@ -241,17 +230,17 @@ void loop() {
       humiSum += h ;
       sampleCount++;
 
-      Serial.print("Ölçüm alındı - Sicaklik: ");
+      Serial.print("Sample taken - Temp: ");
       Serial.print(t);
-      Serial.print(" C, Nem: ");
+      Serial.print(" C, Humidity: ");
       Serial.print(h);
-      Serial.println("      %");
+      Serial.println(" %");
     } else {
-      Serial.println("SHT31 okunamadi!");
+      Serial.println("SHT31 read failed!");
     }
   }
 
-  // OLED ekranı 2 saniyede bir güncelle
+  // Update OLED screen every 2 seconds
   if (millis() - lastOLEDUpdate >= 2000) {
     lastOLEDUpdate = millis();
 
@@ -259,20 +248,20 @@ void loop() {
     display.setCursor(0, 0);
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.println("60 sn ortalamasi:");
+    display.println("60 sec average:");
 
     display.setCursor(0, 10);
-    display.print("Sicaklik: ");
+    display.print("Temp: ");
     display.print(lastAvgTemp - 60.0, 2);
     display.println(" C");
 
     display.setCursor(0, 20);
-    display.print("Nem : ");
+    display.print("Hum : ");
     display.print(lastAvgHumi , 2);
     display.println(" %");
 
     display.setCursor(0, 35);
-    display.print("Ornek Sayisi: ");
+    display.print("Samples: ");
     display.println(sampleCount);
 
     display.display();
